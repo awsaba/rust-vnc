@@ -37,6 +37,7 @@ pub enum Error {
     Disconnected
 }
 
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
         match self {

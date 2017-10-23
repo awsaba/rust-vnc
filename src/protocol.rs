@@ -4,7 +4,14 @@ use ::{Error, Result};
 
 pub trait Message {
     fn read_from<R: Read>(reader: &mut R) -> Result<Self> where Self: Sized;
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()>;
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+        let bytes = self.into_bytes()?;
+        writer.write_all(&bytes)?;
+        Ok(())
+    }
+
+    fn into_bytes(&self) -> Result<Vec<u8>>;
 }
 
 impl Message for Vec<u8> {
@@ -15,11 +22,8 @@ impl Message for Vec<u8> {
         Ok(buffer)
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let length = self.len() as u32; // TODO: check?
-        try!(writer.write_u32::<BigEndian>(length));
-        try!(writer.write_all(&self));
-        Ok(())
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        Ok(self.clone())
     }
 }
 
@@ -33,11 +37,11 @@ impl Message for String {
         Ok(string.iter().map(|c| *c as char).collect())
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let length = self.len() as u32; // TODO: check?
-        try!(writer.write_u32::<BigEndian>(length));
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(self.len() + 4);
+        try!(writer.write_u32::<BigEndian>(self.len() as u32)); // TODO: check?
         try!(writer.write_all(&self.chars().map(|c| c as u8).collect::<Vec<u8>>()));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -62,13 +66,12 @@ impl Message for Version {
         }
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
-        try!(match self {
-            &Version::Rfb33 => writer.write_all(b"RFB 003.003\n"),
-            &Version::Rfb37 => writer.write_all(b"RFB 003.007\n"),
-            &Version::Rfb38 => writer.write_all(b"RFB 003.008\n"),
-        });
-        Ok(())
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        Ok(match self {
+            &Version::Rfb33 => b"RFB 003.003\n".to_vec(),
+            &Version::Rfb37 => b"RFB 003.007\n".to_vec(),
+            &Version::Rfb38 => b"RFB 003.008\n".to_vec(),
+        })
     }
 }
 
@@ -95,7 +98,7 @@ impl Message for SecurityType {
         }
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
         let security_type = match self {
             &SecurityType::Invalid => 0,
             &SecurityType::None => 1,
@@ -103,8 +106,7 @@ impl Message for SecurityType {
             &SecurityType::AppleRemoteDesktop => 30,
             &SecurityType::Unknown(n) => n
         };
-        try!(writer.write_u8(security_type));
-        Ok(())
+        Ok(vec![security_type])
     }
 }
 
@@ -121,13 +123,14 @@ impl Message for SecurityTypes {
         Ok(SecurityTypes(security_types))
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
         let count = self.0.len() as u8; // TODO: check?
-        try!(writer.write_u8(count));
+        let mut writer = Vec::with_capacity(count as usize);
+        writer.push(count);
         for security_type in &self.0 {
-            try!(security_type.write_to(writer));
+            writer.write(&security_type.into_bytes()?)?;
         }
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -147,13 +150,14 @@ impl Message for SecurityResult {
         }
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
         let result = match self {
             &SecurityResult::Succeeded => 0,
             &SecurityResult::Failed => 1
         };
+        let mut writer = Vec::with_capacity(4);
         try!(writer.write_u32::<BigEndian>(result));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -182,7 +186,7 @@ impl Message for AppleAuthHandshake {
         })
     }
 
-    fn write_to<W: Write>(&self, _writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
         unreachable!()
     }
 }
@@ -198,10 +202,13 @@ impl Message for AppleAuthResponse {
         unreachable!()
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(self.ciphertext.len() +
+                                            self.pub_key.len());
+
         try!(writer.write_all(&self.ciphertext));
         try!(writer.write_all(&self.pub_key));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -217,9 +224,8 @@ impl Message for ClientInit {
         })
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
-        try!(writer.write_u8(if self.shared { 1 } else { 0 }));
-        Ok(())
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        Ok(if self.shared { vec![1] } else { vec![0] })
     }
 }
 
@@ -255,7 +261,8 @@ impl Message for PixelFormat {
         Ok(pixel_format)
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(16);
         try!(writer.write_u8(self.bits_per_pixel));
         try!(writer.write_u8(self.depth));
         try!(writer.write_u8(if self.big_endian { 1 } else { 0 }));
@@ -267,7 +274,7 @@ impl Message for PixelFormat {
         try!(writer.write_u8(self.green_shift));
         try!(writer.write_u8(self.blue_shift));
         try!(writer.write_all(&[0u8; 3]));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -289,12 +296,13 @@ impl Message for ServerInit {
         })
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(16);
         try!(writer.write_u16::<BigEndian>(self.framebuffer_width));
         try!(writer.write_u16::<BigEndian>(self.framebuffer_height));
-        try!(PixelFormat::write_to(&self.pixel_format, writer));
-        try!(String::write_to(&self.name, writer));
-        Ok(())
+        writer.write(&self.pixel_format.into_bytes()?)?;
+        writer.write(&Message::into_bytes(&self.name)?)?;
+        Ok(writer)
     }
 }
 
@@ -312,10 +320,11 @@ impl Message for CopyRect {
         })
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(4);
         try!(writer.write_u16::<BigEndian>(self.src_x_position));
         try!(writer.write_u16::<BigEndian>(self.src_y_position));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -348,7 +357,7 @@ impl Message for Encoding {
         }
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
         let encoding = match self {
             &Encoding::Raw => 0,
             &Encoding::CopyRect => 1,
@@ -359,8 +368,9 @@ impl Message for Encoding {
             &Encoding::DesktopSize => -223,
             &Encoding::Unknown(n) => n
         };
+        let mut writer = Vec::with_capacity(4);
         try!(writer.write_i32::<BigEndian>(encoding));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -440,19 +450,20 @@ impl Message for C2S {
             _ => Err(Error::Unexpected("client to server message type"))
         }
     }
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(20);
         match self {
             &C2S::SetPixelFormat(ref pixel_format) => {
                 try!(writer.write_u8(0));
                 try!(writer.write_all(&[0u8; 3]));
-                try!(PixelFormat::write_to(pixel_format, writer));
+                writer.write(&pixel_format.into_bytes()?)?;
             },
             &C2S::SetEncodings(ref encodings) => {
                 try!(writer.write_u8(2));
                 try!(writer.write_all(&[0u8; 1]));
                 try!(writer.write_u16::<BigEndian>(encodings.len() as u16)); // TODO: check?
                 for encoding in encodings {
-                    try!(Encoding::write_to(encoding, writer));
+                    writer.write(&encoding.into_bytes()?)?;
                 }
             },
             &C2S::FramebufferUpdateRequest { incremental, x_position, y_position, width, height } => {
@@ -476,10 +487,10 @@ impl Message for C2S {
                 try!(writer.write_u16::<BigEndian>(y_position));
             },
             &C2S::CutText(ref text) => {
-                try!(String::write_to(text, writer));
+                writer.write(&text.into_bytes()?)?;
             }
         }
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -503,13 +514,14 @@ impl Message for Rectangle {
         })
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(12);
         try!(writer.write_u16::<BigEndian>(self.x_position));
         try!(writer.write_u16::<BigEndian>(self.y_position));
         try!(writer.write_u16::<BigEndian>(self.width));
         try!(writer.write_u16::<BigEndian>(self.height));
-        try!(Encoding::write_to(&self.encoding, writer));
-        Ok(())
+        writer.write(&self.encoding.into_bytes()?)?;
+        Ok(writer)
     }
 }
 
@@ -529,11 +541,12 @@ impl Message for Colour {
         })
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(6);
         try!(writer.write_u16::<BigEndian>(self.red));
         try!(writer.write_u16::<BigEndian>(self.green));
         try!(writer.write_u16::<BigEndian>(self.blue));
-        Ok(())
+        Ok(writer)
     }
 }
 
@@ -589,7 +602,8 @@ impl Message for S2C {
         }
     }
 
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn into_bytes(&self) -> Result<Vec<u8>> {
+        let mut writer = Vec::with_capacity(10);
         match self {
             &S2C::FramebufferUpdate { count } => {
                 try!(writer.write_u8(0));
@@ -601,7 +615,7 @@ impl Message for S2C {
                 try!(writer.write_all(&[0u8; 1]));
                 try!(writer.write_u16::<BigEndian>(first_colour));
                 for colour in colours {
-                    try!(Colour::write_to(colour, writer));
+                    writer.write(&colour.into_bytes()?)?;
                 }
             },
             &S2C::Bell => {
@@ -610,9 +624,9 @@ impl Message for S2C {
             &S2C::CutText(ref text) => {
                 try!(writer.write_u8(3));
                 try!(writer.write_all(&[0u8; 3]));
-                try!(String::write_to(text, writer));
+                writer.write(&text.into_bytes()?)?;
             }
         }
-        Ok(())
+        Ok(writer)
     }
 }

@@ -167,6 +167,9 @@ impl Client {
     pub fn from_tcp_stream<Auth>(mut stream: TcpStream, shared: bool,
                                  auth: Auth) -> Result<Client>
             where Auth: FnOnce(&[AuthMethod]) -> Option<AuthChoice> {
+
+        stream.set_nodelay(true)?;
+
         let version = try!(protocol::Version::read_from(&mut stream));
         debug!("<- Version::{:?}", version);
         debug!("-> Version::{:?}", version);
